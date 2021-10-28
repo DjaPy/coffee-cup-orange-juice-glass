@@ -3,19 +3,17 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
-from gino import Gino
 from sqlalchemy.dialects.postgresql import insert, UUID
 from sqlalchemy.sql.elements import BinaryExpression
 
-db = Gino()
+from app.infrastraction.connection import db
 
 
 class UUIDMixin:
     """
     Добавляет к модели поле id
     """
-    __abstract__ = True
-    id: uuid.UUID = sa.Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, comment='Идентификатор')
+    id: uuid.UUID = db.Column(UUID, primary_key=True, default=uuid.uuid4, comment='Идентификатор')
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__}: {self}>'
@@ -36,28 +34,16 @@ class UUIDMixin:
             raise TypeError('Model instances without primary key value are unhashable')
         return hash(self.id)
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        cls.__abstract__ = False
-
 
 class CreateUpdateMixin:
     """
     Добавляет к модели поля created_at и updated_at
     """
-    __abstract__ = True
-    created_at = sa.Column(sa.DateTime(timezone=True), server_default=sa.func.now())
-    updated_at = sa.Column(sa.DateTime(timezone=True), onupdate=datetime.utcnow, server_default=sa.func.now())
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        cls.__abstract__ = False
+    created_at = db.Column(db.DateTime(timezone=True), server_default=sa.func.now())
+    updated_at = db.Column(db.DateTime(timezone=True), onupdate=datetime.utcnow, server_default=sa.func.now())
 
 
 class BaseDBModel(db.Model, UUIDMixin, CreateUpdateMixin):
-    __abstract__ = True
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        cls.__abstract__ = False
-        cls.__table_args__ = {'schema': 'main'}
 
     @classmethod
     def bulk_upsert(

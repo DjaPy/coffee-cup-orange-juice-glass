@@ -1,30 +1,30 @@
-import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID, ENUM
 
-from app.db import BaseDBModel
+from app.infrastraction.base import BaseDBModel
+from app.infrastraction.connection import db
 from app.enums import DrinkType
 
 
 class User(BaseDBModel):
     __tablename__ = 'users'
 
-    nickname = sa.Column(sa.String, nullable=False, comment='Имя пользователя')
-    email = sa.Column(sa.String, nullable=False, comment='Почта пользователя')
+    nickname = db.Column(db.String, nullable=False, comment='Имя пользователя')
+    telegram_number = db.Column(db.String, nullable=False, comment='Почта пользователя')
 
 
 class Drink(BaseDBModel):
-    __tablename__ = 'Drinks'
+    __tablename__ = 'drinks'
 
-    user_id = sa.Column(
+    user_id = db.Column(
         UUID,
-        sa.ForeignKey('users.id', name='user_id_fkey'),
+        db.ForeignKey('users.id', name='user_id_fkey'),
         nullable=False, comment='Идентификатор пользователя'
     )
-    drink_type = sa.Column(
+    drink_type = db.Column(
         ENUM(DrinkType),
         nullable=False,
         comment='Тип напитка',
     )
-    volume = sa.Column(sa.DECIMAL)
+    volume = db.Column(db.DECIMAL, nullable=True, comment='Объём напитка')
 
 

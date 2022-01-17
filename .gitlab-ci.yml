@@ -1,0 +1,198 @@
+stages:
+  - build
+  - testing
+  - build_image
+  - staging
+  - production
+
+
+## build stage
+
+build:
+  stage: build
+  tags: [docker]
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --cache=true
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/docker/Dockerfile.test"
+      --destination $CI_REGISTRY/educate-online/coffee_juice:latest
+
+## testing stage
+
+test lints:
+  stage: testing
+  tags: [docker]
+  image: registry.educate-online.org/educate-online/coffee_juice
+  script:
+    - python -m flake8 coffee_juice/
+    - python -m mypy coffee_juice/
+
+
+test unit:
+  stage: testing
+  tags: [docker]
+  image: registry.educate-online.org/educate-online/coffee_juice
+  services:
+    - name: postgres:12
+      alias: postgres_service
+    - name: minio/minio
+      alias: storage
+      command: ["minio", "server", "/data"]
+  variables:
+      POSTGRES_PASSWORD: "postgres"
+      MINIO_ROOT_USER: "root"
+      MINIO_ROOT_PASSWORD: "password"
+      SMTP_ENABLED: "true"
+      SMTP_USER: $smtp_user
+      SMTP_PASS: $smtp_pass
+      FRONTEND_URL: "https://test-app.educate-online.org/coffee_juice"
+  script:
+    - python -m pytest --cov=coffee_juice tests/
+
+
+## staging stage
+
+build image:
+  stage: build_image
+  tags: [docker]
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  rules:
+    - if: $CI_COMMIT_REF_NAME =~ /stage-*/
+      variables:
+        env: "coffee_juice-stage:$CI_COMMIT_REF_NAME"
+    - if: $CI_COMMIT_REF_NAME =~ /release-*/
+      variables:
+        env: "coffee_juice:$CI_COMMIT_REF_NAME"
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --cache=true
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/docker/Dockerfile"
+      --destination $CI_REGISTRY/educate-online/$env
+
+
+build image master:
+  stage: build_image
+  tags: [docker]
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf "%s:%s" "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --cache=true
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/docker/Dockerfile"
+      --destination $CI_REGISTRY/educate-online/coffee_juice-test:test-$(date +'%Y-%m-%d')_$CI_COMMIT_SHA
+  only:
+    - master
+
+
+.staging-deploy:
+  tags: [vps]
+  stage: staging
+  image: docker:latest
+  variables:
+    APP_ENV: test
+    DB_SERVER: test-db
+    DB_USER: $db_user
+    DB_PASSWORD: $test_db_password
+    DB_NAME: $db_name
+    HOST: "0.0.0.0"
+    SUBPATH: /coffee_juice
+    JAEGER_ENABLE: "true"
+    JAEGER_HOST: jaeger-host
+    JAEGER_PORT: 6831
+    JAEGER_NAME: coffee_juice-test
+    JAEGET_TAG: coffee_juice-test
+    SENTRY_ENABLE: "true"
+    SENTRY_URL: $test_sentry_url
+    KAFKA_BOOTSTRAP_SERVERS: '["kafka_kafka_1:9092"]'
+    KAFKA_USE_ENVIRONMENT_AS_PREFIX: "true"
+    ERS_URL: 'ers-test:9080'
+    SMTP_ENABLED: "true"
+    SMTP_USER: $smtp_user
+    SMTP_PASS: $smtp_pass
+    FRONTEND_URL: "https://app.educate-online.org/coffee_juice"
+  script:
+    - docker rm --force coffee_juice-test
+    - docker pull registry.educate-online.org/educate-online/coffee_juice-test:test-$(date +'%Y-%m-%d')_$CI_COMMIT_SHA
+    - docker run -p 8088:8000 --restart=always -e "APP_ENV" -e "DB_SERVER" -e "DB_USER" -e "DB_PASSWORD" -e "DB_NAME" -e "HOST" -e "SMTP_ENABLED" -e "SMTP_USER" -e "SMTP_PASS" -e "FRONTEND_URL" -e "JAEGER_ENABLE" -e "JAEGER_HOST" -e "JAEGER_PORT" -e "JAEGER_NAME" -e "SENTRY_ENABLE" -e "SENTRY_URL" -e "PORT" -e "SUBPATH" -e "ERS_URL" -e "KAFKA_BOOTSTRAP_SERVERS" -e "KAFKA_USE_ENVIRONMENT_AS_PREFIX" --name coffee_juice-test --net test --detach registry.educate-online.org/educate-online/coffee_juice-test:test-$(date +'%Y-%m-%d')_$CI_COMMIT_SHA
+    - docker exec coffee_juice-test sed -i -E 's/^(version\s*=\s*)['"'"'"].*?+['"'"'"](.*)$/\1'"'"test-$(date +'%Y-%m-%d')_$CI_COMMIT_SHA"'"'\2/' pyproject.toml
+
+deploy to dev-test:
+  extends: .staging-deploy
+  only:
+    - master
+
+deploy to stage server:
+  extends: .staging-deploy
+  variables:
+    APP_ENV: stage
+    DB_SERVER: test-db
+    DB_USER: $stage_db_user
+    DB_PASSWORD: $stage_test_db_password
+    DB_NAME: $stage_db_name
+    JAEGER_NAME: coffee_juice-stage
+    JAEGET_TAG: coffee_juice-stage
+    SENTRY_URL: $stage_test_sentry_url
+    KAFKA_BOOTSTRAP_SERVERS: '["kafka_kafka_1:9092"]'
+    KAFKA_USE_ENVIRONMENT_AS_PREFIX: "true"
+    ERS_URL: 'ers-stage:9080'
+  script:
+     - docker rm --force coffee_juice-stage
+     - docker pull registry.educate-online.org/educate-online/coffee_juice-stage:$CI_COMMIT_REF_NAME
+     - docker run -p 8091:8000 --restart=always -e "APP_ENV" -e "DB_SERVER" -e "DB_USER" -e "DB_PASSWORD" -e "DB_NAME" -e "HOST" -e "SMTP_ENABLED" -e "SMTP_USER" -e "SMTP_PASS" -e "FRONTEND_URL" -e "JAEGER_ENABLE" -e "JAEGER_HOST" -e "JAEGER_PORT" -e "JAEGER_NAME" -e "SENTRY_ENABLE" -e "SENTRY_URL" -e "PORT" -e "SUBPATH" -e "ERS_URL" -e "KAFKA_BOOTSTRAP_SERVERS" -e "KAFKA_USE_ENVIRONMENT_AS_PREFIX" --name coffee_juice-stage --net test --detach registry.educate-online.org/educate-online/coffee_juice-stage:$CI_COMMIT_REF_NAME
+     - docker exec coffee_juice-stage sed -i -E 's/^(version\s*=\s*)['"'"'"].*?+['"'"'"](.*)$/\1'"'"coffee_juice-stage:$CI_COMMIT_REF_NAME"'"'\2/' pyproject.toml
+  only:
+     - /^stage-*/
+
+### production stage
+
+deploy to production:
+  stage: production
+  tags: [prod-vps]
+  image: docker:latest
+  variables:
+    APP_ENV: prod
+    DB_SERVER: db
+    DB_USER: $db_user
+    DB_PASSWORD: $db_password
+    DB_NAME: $db_name
+    HOST: "0.0.0.0"
+    SUBPATH: /coffee_juice
+    JAEGER_ENABLE: "true"
+    JAEGER_HOST: jaeger-host
+    JAEGER_PORT: 6831
+    JAEGER_NAME: coffee_juice
+    JAEGET_TAG: coffee_juice
+    SENTRY_ENABLE: "true"
+    SENTRY_URL: $sentry_url
+    SMTP_ENABLED: "true"
+    SMTP_USER: $smtp_user
+    SMTP_PASS: $smtp_pass
+    KAFKA_BOOTSTRAP_SERVERS: '["kafka_kafka_1:9092"]'
+    KAFKA_USE_ENVIRONMENT_AS_PREFIX: "false"
+    ERS_URL: 'ers:9080'
+  script:
+    - docker rm --force coffee_juice
+    - docker pull registry.educate-online.org/educate-online/coffee_juice:$CI_COMMIT_REF_NAME
+    - docker run -p 8088:8000 --restart=always -e "APP_ENV" -e "DB_SERVER" -e "DB_USER" -e "DB_PASSWORD" -e "DB_NAME" -e "HOST" -e "SMTP_ENABLED" -e "SMTP_USER" -e "SMTP_PASS" -e "FRONTEND_URL" -e "JAEGER_ENABLE" -e "JAEGER_HOST" -e "JAEGER_PORT" -e "JAEGER_NAME" -e "SENTRY_ENABLE" -e "SENTRY_URL" -e "PORT" -e "SUBPATH" -e "ERS_URL" -e "KAFKA_BOOTSTRAP_SERVERS" -e "KAFKA_USE_ENVIRONMENT_AS_PREFIX" --name coffee_juice --net test --detach registry.educate-online.org/educate-online/coffee_juice:$CI_COMMIT_REF_NAME
+    - docker exec coffee_juice sed -i -E 's/^(version\s*=\s*)['"'"'"].*?+['"'"'"](.*)$/\1'"'"coffee_juice:$CI_COMMIT_REF_NAME"'"'\2/' pyproject.toml
+  when: manual
+  only:
+     - /^release-*/

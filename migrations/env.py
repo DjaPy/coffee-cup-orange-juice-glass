@@ -3,14 +3,18 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app import models
-from app.config import config as app_config
-from app.infrastraction.connection import db
+from coffee_juice.adapters.orm import db
+from coffee_juice.config import config as app_config
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
+# get section [alembic] from alembic.ini
+section = config.config_ini_section
+
+# set value db_url to sqlalchemy.url in alembic.ini
+config.set_section_option(section, 'sqlalchemy.url', app_config.db_dsn)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -21,7 +25,6 @@ fileConfig(config.config_file_name)
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
 
-config.set_main_option("sqlalchemy.url", app_config.db_dsn)
 target_metadata = db
 
 
